@@ -19,8 +19,12 @@ First built and validated in a Microsoft 365 Developer Program tenant (E5, 25 li
 | 2 | Azure Automation account + runbook + role + API permission (smoke test passed) | Done |
 | 3 | Flow Phase A + B (trigger, variables, audit row, Switch) | Done |
 | 3 | New Hire scope §6.1–§6.5 (provision user, manager wiring, license assignment) | Done — verified end-to-end |
-| 3 | New Hire scope §6.6–§6.8 (groups, welcome email, finalize) | In progress |
-| 3 | Termination scope §7.x | Not started |
+| 3 | New Hire scope §6.6 (group memberships) | Done — verified end-to-end (success + not-found paths) |
+| 3 | New Hire scope §6.7 (welcome email) | Done — verified end-to-end |
+| 3 | New Hire scope §6.8 (finalize audit row, Status=Succeeded/Partial) | Done — verified both paths |
+| 4 | Termination scope §7.1 (resolve target user) | Done — verified end-to-end |
+| 4 | Termination scope §7.2 (Delay Until with HH:MM / Immediate validation) | Built — pending test |
+| 4 | Termination scope §7.3–§7.9 (block sign-in, revoke sessions, remove groups/licenses, mail forwarding, mailbox action, finalize) | Not started |
 | 4 | Test log filled in, "How it works" walkthrough written | In progress |
 
 ## Documents
@@ -194,12 +198,15 @@ The flow's six test scenarios are defined in [02-power-automate-flows.md section
 |---|---|---|---|---|
 | 1a | New hire, full success (Jurian Timber) | 2026-05-20 | Succeeded | First full §6.1–§6.5 pass after fixing Set_varAuditRowID, GetManager auth, SetManager body, SetManager runAfter, char(10) → decodeUriComponent('%0A'), and granting Graph Application permissions. User created, manager wired, license assigned. |
 | 1b | New hire, partial (Jenner) | 2026-05-20 | Failed (license unassigned) | Pre-fix run. User created in Entra but SetManager success-path action was wired to Failed runAfter, so HTTP_GetSkus and downstream license-assign were skipped. Fixed in subsequent build. |
-| 1c | New hire, partial (Naomi Tucker, James Bond, Jennifer Aniston) | 2026-05-20 | Mixed | Various intermediate runs while iterating on Set_varAuditRowID and Graph permissions. |
-| 2 | New hire, misspelled group name | — | Not run | Pending §6.6 |
-| 3 | New hire, manager UPN does not exist | — | Not run | Pending §6.6 |
-| 4 | Termination, immediate, no conversion | — | Not run | Pending §7.x |
-| 5 | Termination, scheduled, shared mailbox + forwarding | — | Not run | Pending §7.x |
-| 6 | Force 429 with rapid submissions | — | Not run | Pending §6.6 |
+| 1c | New hire, intermediate runs (Naomi Tucker, James Bond, Jennifer Aniston) | 2026-05-20 | Mixed | Various while iterating on Set_varAuditRowID and Graph permissions. |
+| 1d | New hire, §6.6 groups loop (Fatoumata Diawara) | 2026-05-21 | Succeeded | Both group-found path (`CloudOps Technologies` → HTTP_AddGroupMember succeeded) and group-not-found path (`TESTGROUP_DOESNOTEXIST` → logged to varStepsFailed) exercised in same run. Also validated trim() fix for whitespace-padded First Name input. |
+| 1e | New hire, §6.7 welcome email (Angelina Carlos) | 2026-05-21 | Succeeded | Send_email_WelcomeNewHire delivered HTML body to Q11 Personal email; rendered correctly with UPN, temp password, sign-in URL, role details, groups. |
+| 1f | New hire, §6.8 finalize success (Nyla Brown) | 2026-05-21 | Succeeded | All 7 expected step lines captured in StepsCompleted (CreateUser → GetManager → SetManager → GetSkus → AssignLicense → WelcomeEmail → NewHire branch complete). Status=Succeeded, StepsFailed empty. Confirmed SetVariable→AppendToStringVariable fix. |
+| 1g | New hire, §6.8 finalize partial (Mark Anthony) | 2026-05-21 | Succeeded (Status=Partial) | Submitted with one real group + one fake group. Audit row Status=Partial via `if(empty(varStepsFailed),'Succeeded','Partial')`. StepsFailed captured "Group not found". GroupsAdded captured "CloudOps Technologies". |
+| 4a | Termination §7.1 resolve target user (Naomi Tucker) | 2026-05-21 | Succeeded | HTTP_GetTargetUser returned id, displayName, UPN, assignedLicenses. Set_varTargetUserObjectID_Term populated. Audit row updated with target user details. Status=In Progress (no §7 finalize yet). |
+| 4b | Termination §7.2 Delay Until (Immediate / scheduled / invalid) | — | Pending | Run 3 scenarios: Q16=`Immediate`, Q16=`15:00` future date, Q16=`Immediiate` (typo → expect InvalidTerminationTime). |
+| 5 | Termination, full path through §7.3-§7.9 | — | Not run | Pending §7.3 onward |
+| 6 | Force 429 with rapid submissions | — | Not run | Worth running after Termination complete. Validates retryPolicy on HTTP actions. |
 
 ## Tooling: edit the flow as JSON, not in the designer
 
