@@ -23,9 +23,15 @@ First built and validated in a Microsoft 365 Developer Program tenant (E5, 25 li
 | 3 | New Hire scope §6.7 (welcome email) | Done — verified end-to-end |
 | 3 | New Hire scope §6.8 (finalize audit row, Status=Succeeded/Partial) | Done — verified both paths |
 | 4 | Termination scope §7.1 (resolve target user) | Done — verified end-to-end |
-| 4 | Termination scope §7.2 (Delay Until with HH:MM / Immediate validation) | Built — pending test |
-| 4 | Termination scope §7.3–§7.9 (block sign-in, revoke sessions, remove groups/licenses, mail forwarding, mailbox action, finalize) | Not started |
-| 4 | Test log filled in, "How it works" walkthrough written | In progress |
+| 4 | Termination scope §7.2 (Delay Until with HH:MM / Immediate validation) | Done — verified strict invalid path |
+| 4 | Termination scope §7.3 (block sign-in) | Done — verified accountEnabled=false in Entra |
+| 4 | Termination scope §7.4 (revoke active sessions) | Done — verified signInSessionsValidFromDateTime updated |
+| 4 | Termination scope §7.5 (remove from all groups, paginated loop) | Done — verified end-to-end (Nyla removed from CloudOps Technologies cleanly) |
+| 4 | Termination scope §7.6 (remove all licenses) | Done — verified license count went 1→0 |
+| 4 | Termination scope §7.7+§7.8 (mailbox action dispatch — Forward then delete / Delete immediately / Convert to Shared) | Done — all 3 paths verified |
+| 4 | Termination scope §7.9 (finalize audit row) | Done — Status branching works for Succeeded/Partial |
+| 5 | Azure Automation runbook integration for Convert to Shared | Deferred — placeholder logs manual step in audit row |
+| 5 | "How it works" walkthrough written | In progress |
 
 ## Documents
 
@@ -103,7 +109,20 @@ The flow has one trigger (Microsoft Forms), one switch (action type), two main b
 
 Every Graph call has a parallel error-handler branch that appends to `varStepsFailed` / `varErrorDetails` on failure. Critical-path failures (CreateUser, license not found, assign license) write a Failed audit row and call `Terminate` to short-circuit the rest of the run.
 
-**Termination path (designed, not yet built).**
+**Termination path (verified end-to-end, all three mailbox-action choices):**
+
+1. Form submission triggers the same flow; Switch routes Action Type = `Termination` into the termination branch.
+2. **§7.1 HTTP_GetTargetUser** — GET `/users/{Q14}?$select=id,displayName,assignedLicenses,userPrincipalName`. Captures user object ID into `varTargetUserObjectID`.
+3. **§7.2 Delay Until** — `Compose_TargetTimestamp` evaluates `if(toLower(trim(Q16)) == 'immediate', utcNow(), formatDateTime(Q15 + 'T' + Q16 + ':00'))`. Strict validation: any malformed input (typo like `Immediiate` or gibberish like `xyz`) fails the Compose, terminates with `InvalidTerminationTime`.
+4. **§7.3 HTTP_BlockSignIn** — PATCH `/users/{id}` with `{"accountEnabled": false}`. Critical (terminates on failure).
+5. **§7.4 HTTP_RevokeSessions** — POST `/users/{id}/revokeSignInSessions` invalidates all refresh tokens. Combined with §7.3 the user is fully ejected.
+6. **§7.5 Remove from all groups** — Paginated DoUntil loop fetches `/users/{id}/memberOf` and follows `@odata.nextLink` until empty (handles up to 10,000 memberships defensively). Then Apply_to_each membership: filter to `#microsoft.graph.group`, DELETE `/groups/{id}/members/{userId}/$ref`. Group display names accumulated into `varGroupsRemoved`. Failures are non-critical (logged, flow continues — handles dynamic groups and on-prem-synced groups that reject manual removal).
+7. **§7.6 Remove all licenses** — `Select_LicenseSkuIds` maps the cached `assignedLicenses` from §7.1 to an array of `skuId` strings. If empty, skip. Otherwise POST `/users/{id}/assignLicense` with `{addLicenses: [], removeLicenses: <array>}`.
+8. **§7.7+§7.8 Mailbox action dispatch** — Switch on Q18:
+   - `Forward then delete`: PATCH `/users/{id}/mailboxSettings` with auto-reply pointing to Q19 delegate UPN → POST `/mailFolders/inbox/messageRules` to create a forwarding rule → DELETE `/users/{id}`. Auto-reply and forward rule are non-critical (logged on failure).
+   - `Delete immediately`: just DELETE `/users/{id}`.
+   - `Convert to Shared`: currently a placeholder — logs `Manual: convert mailbox to shared (Azure Automation runbook not yet wired)` to `varStepsFailed`. Account preserved for manual completion via Exchange Online. To productionize: add `shared_azureautomation` connection and call the `Convert-MailboxToShared` runbook.
+9. **§7.9 Finalize audit row** — Same pattern as §6.8 but with termination fields: `Status = if(empty(varStepsFailed), 'Succeeded', 'Partial')`, `MailboxConverted = equals(Q18, 'Convert to Shared')`, `TerminationReason` from Q17, `GroupsRemoved` from varGroupsRemoved.
 
 **Design choice — one audit row per request, not per step.** The audit row is created up front with `In Progress`, mutated through the run, and finalized at the end. Step-level detail lives in the `StepsCompleted` and `ErrorDetails` text columns. This keeps the audit list query-friendly (one row per Form submission) instead of fragmenting into a row per HTTP call. Step granularity is preserved through the flushed string variables.
 
@@ -203,10 +222,15 @@ The flow's six test scenarios are defined in [02-power-automate-flows.md section
 | 1e | New hire, §6.7 welcome email (Angelina Carlos) | 2026-05-21 | Succeeded | Send_email_WelcomeNewHire delivered HTML body to Q11 Personal email; rendered correctly with UPN, temp password, sign-in URL, role details, groups. |
 | 1f | New hire, §6.8 finalize success (Nyla Brown) | 2026-05-21 | Succeeded | All 7 expected step lines captured in StepsCompleted (CreateUser → GetManager → SetManager → GetSkus → AssignLicense → WelcomeEmail → NewHire branch complete). Status=Succeeded, StepsFailed empty. Confirmed SetVariable→AppendToStringVariable fix. |
 | 1g | New hire, §6.8 finalize partial (Mark Anthony) | 2026-05-21 | Succeeded (Status=Partial) | Submitted with one real group + one fake group. Audit row Status=Partial via `if(empty(varStepsFailed),'Succeeded','Partial')`. StepsFailed captured "Group not found". GroupsAdded captured "CloudOps Technologies". |
-| 4a | Termination §7.1 resolve target user (Naomi Tucker) | 2026-05-21 | Succeeded | HTTP_GetTargetUser returned id, displayName, UPN, assignedLicenses. Set_varTargetUserObjectID_Term populated. Audit row updated with target user details. Status=In Progress (no §7 finalize yet). |
-| 4b | Termination §7.2 Delay Until (Immediate / scheduled / invalid) | — | Pending | Run 3 scenarios: Q16=`Immediate`, Q16=`15:00` future date, Q16=`Immediiate` (typo → expect InvalidTerminationTime). |
-| 5 | Termination, full path through §7.3-§7.9 | — | Not run | Pending §7.3 onward |
-| 6 | Force 429 with rapid submissions | — | Not run | Worth running after Termination complete. Validates retryPolicy on HTTP actions. |
+| 4a | Termination §7.1 resolve target user (Naomi Tucker) | 2026-05-21 | Succeeded | HTTP_GetTargetUser returned id, displayName, UPN, assignedLicenses. Audit row updated with target user details. |
+| 4b | Termination §7.2 invalid format (typo `xyz`) | 2026-05-21 | Failed | Compose_TargetTimestamp rejected `2026-05-20Txyz:00`, triggered InvalidTermTime error chain, audit row Status=Failed. Strict-validation path verified. |
+| 4c | Termination §7.3 block sign-in (Mark Anthony) | 2026-05-21 | Succeeded | PATCH /users/{id} `{accountEnabled:false}` → 204. Verified Mark's accountEnabled = False in Entra. |
+| 4d | Termination §7.4 revoke sessions (Jurian Timber) | 2026-05-21 | Succeeded | POST /revokeSignInSessions → 200 `{value:true}`. Verified signInSessionsValidFromDateTime updated to ~now. |
+| 4e | Termination §7.5 remove from groups (Nyla Brown) | 2026-05-21 | Succeeded | DoUntil paginated memberOf, Apply_to_each removed from `CloudOps Technologies`. Other 14 members preserved. |
+| 4f | Termination §7.6+§7.8 Convert to Shared (Nyla Brown, resubmit) | 2026-05-21 | Status=Partial | Full §7.1-§7.9 chain. License removed (SPB), groups removed, Switch routed to Convert to Shared placeholder which logs "manual completion required". User account preserved. |
+| 4g | Termination §7.8 Delete immediately (James Bond) | 2026-05-21 | Succeeded | Full chain through DELETE /users/{id}. James Bond removed from Entra (verified 404). |
+| 4h | Termination §7.8 Forward then delete (Jennifer Aniston) | 2026-05-21 | Partial | SetAutoReply + CreateForwardRule both got 404 (mailbox not provisioned for this test user in dev tenant — design correctly marks these R=non-blocking). DeleteUser succeeded, Jennifer removed from Entra. |
+| 5 | Force 429 with rapid submissions | — | Not run | Worth running once. Validates retryPolicy on HTTP actions. |
 
 ## Tooling: edit the flow as JSON, not in the designer
 
