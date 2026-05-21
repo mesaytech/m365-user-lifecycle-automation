@@ -30,7 +30,7 @@ First built and validated in a Microsoft 365 Developer Program tenant (E5, 25 li
 | 4 | Termination scope §7.6 (remove all licenses) | Done — verified license count went 1→0 |
 | 4 | Termination scope §7.7+§7.8 (mailbox action dispatch — Forward then delete / Delete immediately / Convert to Shared) | Done — all 3 paths verified |
 | 4 | Termination scope §7.9 (finalize audit row) | Done — Status branching works for Succeeded/Partial |
-| 5 | Azure Automation runbook integration for Convert to Shared | Deferred — placeholder logs manual step in audit row |
+| 4 | Azure Automation runbook integration for Convert to Shared | Done — runbook invoked via `shared_azureautomation` connector. MI auth + EXO module + Set-Mailbox -Type Shared all working. Two known caveats below. |
 | 5 | "How it works" walkthrough written | In progress |
 
 ## Documents
@@ -230,6 +230,7 @@ The flow's six test scenarios are defined in [02-power-automate-flows.md section
 | 4f | Termination §7.6+§7.8 Convert to Shared (Nyla Brown, resubmit) | 2026-05-21 | Status=Partial | Full §7.1-§7.9 chain. License removed (SPB), groups removed, Switch routed to Convert to Shared placeholder which logs "manual completion required". User account preserved. |
 | 4g | Termination §7.8 Delete immediately (James Bond) | 2026-05-21 | Succeeded | Full chain through DELETE /users/{id}. James Bond removed from Entra (verified 404). |
 | 4h | Termination §7.8 Forward then delete (Jennifer Aniston) | 2026-05-21 | Partial | SetAutoReply + CreateForwardRule both got 404 (mailbox not provisioned for this test user in dev tenant — design correctly marks these R=non-blocking). DeleteUser succeeded, Jennifer removed from Entra. |
+| 4i | Termination §7.8 Convert to Shared via Azure Automation runbook (Nyla Brown resubmit) | 2026-05-21 | Succeeded (PA) / Failed (runbook internally) | Runbook invocation verified end-to-end: MI auth, ExchangeOnlineManagement v3.4.0 module, Connect-ExchangeOnline, Set-Mailbox all working. Runbook itself failed because Nyla's mailbox was already gone (her license was removed in run 4f, deleting the mailbox). PA reported Succeeded because the connector signals on job *creation*, not job *outcome*. Two design caveats noted in "Known limitations" section. |
 | 5 | Force 429 with rapid submissions | — | Not run | Worth running once. Validates retryPolicy on HTTP actions. |
 
 ## Tooling: edit the flow as JSON, not in the designer
@@ -268,6 +269,14 @@ The local JSON contains the flow's embedded Graph client secret. The pattern `fl
 - **M365 Developer Program tenants don't pre-provision Dataverse**, so `pac` CLI / solution-based workflows don't work out of the box. Bootstrapping a tenant Global Admin into a Dataverse System Administrator role is also blocked by a chicken-and-egg around `prvAssignRole` and a known bug in `pac admin self-elevate` (sends an empty `api-version=` parameter in pac 2.7.4). For this project, none of that matters — the Power Automate REST API path doesn't need Dataverse at all.
 - **`Update item` against a SharePoint list needs the row's numeric ID, not a string.** The audit row's ID has to be captured with `body('Create_AuditRow')?['ID']` into a properly typed Integer variable. Wrapping it in `string()` produces a runtime type-mismatch error.
 - **Production hardening this dev-tenant build deliberately skips:** the flow's HTTP actions embed the client secret instead of using a connection reference; there's no managed identity for the flow itself; no PIM gating on the app reg's role grants; no Sentinel/KQL alerts on the audit list; no idempotency key on the Form trigger. All called out in [docs/02-power-automate-flows.md §11](docs/02-power-automate-flows.md).
+
+## Known limitations (would fix for production)
+
+Two design issues uncovered while wiring §7.8 Convert to Shared via Azure Automation. Both accepted as deferred work for this dev-tenant portfolio.
+
+**A. License removal happens BEFORE mailbox conversion.** §7.6 RemoveLicenses runs before §7.8 mailbox action. Removing an M365 license soft-deletes the mailbox (30-day retention), and `Set-Mailbox -Type Shared` against a soft-deleted mailbox fails with "object couldn't be found". Production fix: either reorder §7.6 to run *after* §7.8, OR skip §7.6 entirely for the Convert-to-Shared case (a shared mailbox ≤50GB doesn't require any license), OR add `-SoftDeletedMailbox` to the runbook's Set-Mailbox call.
+
+**B. Runbook failures aren't surfaced to the flow.** The Power Automate Azure Automation connector reports `CreateJob` HTTP 200 when the *job is created*, not when the *runbook completes successfully*. A runbook that throws inside Exchange Online still shows up as Succeeded in the flow run. Production fix: add a `Get_Job` action after `Create_Job_ConvertToShared` to poll the job's actual Status, then route on `equals(Status, 'Completed')` to the success or critical-error path.
 
 ## Out of scope
 
