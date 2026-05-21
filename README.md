@@ -1,0 +1,246 @@
+# M365 User Lifecycle Automation
+
+Reference implementation of an end-to-end Power Automate flow that handles new-hire provisioning and termination offboarding in a Microsoft 365 tenant. Includes full audit logging in SharePoint, parallel error-handler branches around every Microsoft Graph call, and a PowerShell-based JSON-edit tooling workflow.
+
+Intended as a deployable reference for other tenants. All tenant-specific identifiers are externalized to `config.local.json` (gitignored). See **Prerequisites** and **Tenant-specific values to capture** sections below.
+
+First built and validated in a Microsoft 365 Developer Program tenant (E5, 25 licenses).
+
+## Status
+
+| Day | Milestone | State |
+|---|---|---|
+| 1 | Tenant activated, SharePoint and Forms schema designed | Done |
+| 1 | Power Automate flow design (both branches, error handling, runbook, pagination) documented | Done |
+| 2 | Graph API reference compiled | Done |
+| 2 | Microsoft Form built in tenant | Done |
+| 2 | SharePoint list created in tenant | Done |
+| 2 | Entra ID app registration + 3 Graph Application permissions + admin consent | Done |
+| 2 | Azure Automation account + runbook + role + API permission (smoke test passed) | Done |
+| 3 | Flow Phase A + B (trigger, variables, audit row, Switch) | Done |
+| 3 | New Hire scope §6.1–§6.5 (provision user, manager wiring, license assignment) | Done — verified end-to-end |
+| 3 | New Hire scope §6.6–§6.8 (groups, welcome email, finalize) | In progress |
+| 3 | Termination scope §7.x | Not started |
+| 4 | Test log filled in, "How it works" walkthrough written | In progress |
+
+## Documents
+
+- [docs/01-sharepoint-schema.md](docs/01-sharepoint-schema.md) — Microsoft Form question list and `Lifecycle Audit Log` list schema
+- [docs/02-power-automate-flows.md](docs/02-power-automate-flows.md) — Step-by-step Power Automate flow design for both branches
+- [docs/03-graph-api-reference.md](docs/03-graph-api-reference.md) — Exact Graph endpoints, payloads, and required scopes
+
+## Architecture
+
+```
+                   +--------------------------+
+                   | Admin submits MS Form    |
+                   +-------------+------------+
+                                 |
+                   +-------------v------------+
+                   | Power Automate flow      |
+                   | Flow-M365-Lifecycle-Main |
+                   +-------------+------------+
+                                 |
+        +------------------------+------------------------+
+        |                                                 |
++-------v--------+                              +---------v--------+
+| Switch:        |                              | Audit row created|
+| Action Type    |---------- references ------->| in SharePoint    |
++----+------+----+                              | (Status=In Prog) |
+     |      |                                   +---------+--------+
+     |      |                                             |
++----v--+ +-v------+                                      |
+| New   | | Term-  |                                      |
+| Hire  | | inate  |                                      |
++--+----+ +---+----+                                      |
+   |          |                                           |
+   |          |   +-------------------+                   |
+   +----+-----+---| Microsoft Graph   |                   |
+        |         | v1.0 endpoints    |                   |
+        |         +-------------------+                   |
+        |                                                 |
+        |         +-------------------+                   |
+        +---------| Office 365        |                   |
+        |         | Outlook connector |                   |
+        |         +-------------------+                   |
+        |                                                 |
+        |         +-------------------+                   |
+        +---------| Azure Automation  |                   |
+                  | runbook (shared   |                   |
+                  | mbx conversion)   |                   |
+                  +-------------------+                   |
+                            |                             |
+                            +-----------+-----------------+
+                                        |
+                              +---------v---------+
+                              | Audit row updated |
+                              | (Status=Succeeded |
+                              | / Partial / Fail) |
+                              +-------------------+
+```
+
+The flow has one trigger (Microsoft Forms), one switch (action type), two main branches, one finalize scope, and one top-level error handler. Every Graph call has a parallel error-handler block that appends to step-tracking variables flushed to the audit row at the end. The Do until loop around the high-throughput steps honors Graph's `Retry-After` header on HTTP 429.
+
+## How it works
+
+**New Hire path (verified end-to-end through §6.5):**
+
+1. Form submission triggers the flow with the new hire's details: first/last name, job title, department, manager UPN, license SKU choice, groups.
+2. The flow initializes nine variables for step tracking and audit, then creates an audit row in `LifecycleAuditLog` with Status=`In Progress`. The row's SharePoint item ID is captured into `varAuditRowID` for later updates.
+3. A Switch routes on Action Type. The New Hire case:
+   - Composes the UPN, mail nickname, and display name from form fields.
+   - **HTTP_CreateUser** — POST `/users` to Graph with a temp password (force-change-on-first-sign-in).
+   - **HTTP_GetManager** — GET `/users/{managerUPN}?$select=id` to resolve the manager's object ID.
+   - **HTTP_SetManager** — PUT `/users/{newUserId}/manager/$ref` with the manager's `@odata.id`.
+   - **HTTP_GetSkus** → Filter array by `skuPartNumber` → Compose first match's `skuId`.
+   - **Condition_SkuMissing** — if SKU lookup is empty, terminate the run with `LicenseNotFound`; else proceed to license assignment.
+   - **HTTP_AssignLicense** — POST `/users/{newUserId}/assignLicense`.
+4. §6.6 (group membership), §6.7 (welcome email), §6.8 (finalize audit row to Status=`Succeeded`) are next.
+
+Every Graph call has a parallel error-handler branch that appends to `varStepsFailed` / `varErrorDetails` on failure. Critical-path failures (CreateUser, license not found, assign license) write a Failed audit row and call `Terminate` to short-circuit the rest of the run.
+
+**Termination path (designed, not yet built).**
+
+**Design choice — one audit row per request, not per step.** The audit row is created up front with `In Progress`, mutated through the run, and finalized at the end. Step-level detail lives in the `StepsCompleted` and `ErrorDetails` text columns. This keeps the audit list query-friendly (one row per Form submission) instead of fragmenting into a row per HTTP call. Step granularity is preserved through the flushed string variables.
+
+## Tech stack
+
+- Microsoft 365 E5 (developer tenant)
+- Microsoft Forms (trigger)
+- Power Automate cloud flow (orchestration) with HTTP, SharePoint, Office 365 Outlook, and Azure Automation connectors
+- SharePoint Online (audit log)
+- Microsoft Graph v1.0 (identity, group, license, mailbox operations)
+- Entra ID app registration with client-credentials OAuth (application permissions only)
+- Azure Automation PowerShell 7.2 runbook with the ExchangeOnlineManagement module (shared mailbox conversion via system-assigned managed identity)
+
+No paid third-party tools. No custom Power Automate connectors. Premium Power Automate connectors (HTTP, Azure Automation) included with the Developer Program E5 license.
+
+## Prerequisites
+
+Before building, the tenant needs the following to be in place. Some of these require Global Admin to assign.
+
+### Tenant
+
+- Microsoft 365 E5 (or equivalent SKU that includes Entra ID P1+, Exchange Online, and SharePoint)
+- An Azure subscription linked to the same tenant (the free trial is sufficient, used only for Azure Automation)
+
+### Identity
+
+- Entra ID app registration `M365-Lifecycle-Automation` with a client secret. Full setup steps and the six required Graph application permissions are in [02-power-automate-flows.md section 2](docs/02-power-automate-flows.md#2-prerequisites).
+- Admin consent granted for all six permissions.
+
+### Azure Automation
+
+- Resource group `rg-m365-automation` in the region closest to your tenant.
+- Automation account `aa-m365-lifecycle` with a system-assigned managed identity.
+- `ExchangeOnlineManagement` PowerShell module **version 3.4.0** (not the latest) imported into the automation account at runtime **7.2**. Versions 3.6.0 and newer fail with `HRESULT 0x80131047` in the Azure Automation PS 7.2 sandbox due to a .NET 8 dependency the sandbox cannot satisfy. The portal does not let you pick a version, so download the zip locally and upload it. Full command sequence is in [02-power-automate-flows.md section 2.4](docs/02-power-automate-flows.md#24-azure-automation-account-only-needed-if-any-termination-will-choose-convert-to-shared-mailbox--yes) under "Module version pinning".
+- Runbook `Convert-MailboxToShared` (PowerShell 7.2) published, code is in [02-power-automate-flows.md section 2.4](docs/02-power-automate-flows.md#24-azure-automation-account-only-needed-if-any-termination-will-choose-convert-to-shared-mailbox--yes).
+
+> **IMPORTANT — managed identity needs TWO grants, not one.** Both must be in place before the `Convert-MailboxToShared` runbook can call `Set-Mailbox`:
+>
+> 1. **Exchange Recipient Administrator** directory role in Entra. Entra admin center → Identity → Roles & admins → All roles → Exchange Recipient Administrator → Add assignments → search by the managed identity's object ID.
+>
+> 2. **Exchange.ManageAsApp** application permission on the Office 365 Exchange Online API service principal. The portal does not surface this for managed identities — assign it via the PowerShell snippet in [02-power-automate-flows.md section 2.4](docs/02-power-automate-flows.md#24-azure-automation-account-only-needed-if-any-termination-will-choose-convert-to-shared-mailbox--yes) under "Granting Exchange.ManageAsApp".
+>
+> Both require Global Admin to grant. Without the API permission, `Connect-ExchangeOnline -ManagedIdentity` returns `UnAuthorized (UnAuthorized)`. The directory role alone is not enough.
+
+### Power Automate
+
+- Connections created for: Microsoft Forms, SharePoint, Office 365 Outlook, HTTP (no pre-built connection, configured per action), Azure Automation.
+- Premium connector entitlement (HTTP and Azure Automation are premium, included in the Developer Program E5 tenant).
+
+### SharePoint
+
+- A site to host the audit log. Either the default site or a dedicated site collection at `/sites/ITAutomation`. Record the URL once chosen.
+- `Lifecycle Audit Log` list created per [01-sharepoint-schema.md](docs/01-sharepoint-schema.md), including the 28 columns, 5 indexes, and 7 views.
+- A second Entra ID app registration used by `scripts/Setup-SharePointList.ps1` for PnP PowerShell authentication. This is distinct from the `M365-Lifecycle-Automation` app the Power Automate flow uses for Graph calls. PnP.PowerShell 2.x removed the bundled multi-tenant Management Shell app and the `PNPPOWERSHELL_CLIENTID` environment variable is not honored in current builds, so the setup script requires the client ID as an explicit parameter.
+
+    Register the app (one line, requires Global Admin and an interactive consent prompt):
+
+    ```powershell
+    Register-PnPEntraIDApp -ApplicationName "PnP-Lifecycle-Setup" -Tenant <yourtenant>.onmicrosoft.com -Interactive
+    ```
+
+    Record the returned ClientId in the "Tenant-specific values to capture" table below and pass it to the setup script via `-ClientId`.
+
+### Microsoft Forms
+
+- Form `M365 User Lifecycle Request` created per [01-sharepoint-schema.md](docs/01-sharepoint-schema.md) with all 20 questions, branching rules, and the "Record name" setting on.
+
+## Tenant-specific values to capture
+
+These are unique to your tenant. Capture them in a local `config.local.json` (gitignored) — **do not commit them to the public repo**. A `config.example.json` with placeholders is checked in.
+
+| Value | Where to find it |
+|---|---|
+| Tenant primary domain | Entra → Overview → Primary domain |
+| Tenant ID | Entra → Overview |
+| App registration client ID (`M365-Lifecycle-Automation`, used by the flow) | App registration overview |
+| App registration client secret (`M365-Lifecycle-Automation`) | Stored in Power Automate connection only, never in repo |
+| App registration client ID (`PnP-Lifecycle-Setup`, used by the setup script) | Output of `Register-PnPEntraIDApp`, also visible in Entra → App registrations |
+| SharePoint audit site URL | After site creation |
+| `LifecycleAuditLog` list URL and list GUID | After list creation |
+| Form ID | Forms URL after form creation. Pick from dropdown in Power Automate. |
+| Power Platform Environment ID + Environment URL | https://admin.powerplatform.microsoft.com → Environments |
+| Flow GUID | Power Automate → flow URL `…/flows/{guid}/details` |
+| License SKU IDs available | `Get-MgSubscribedSku` output |
+| Automation account subscription, resource group, name | Azure portal |
+
+## Test log
+
+The flow's six test scenarios are defined in [02-power-automate-flows.md section 10](docs/02-power-automate-flows.md#10-testing-plan). This table records each test's run outcome and the audit row produced.
+
+| # | Scenario | Date run | Status | Notes |
+|---|---|---|---|---|
+| 1a | New hire, full success (Jurian Timber) | 2026-05-20 | Succeeded | First full §6.1–§6.5 pass after fixing Set_varAuditRowID, GetManager auth, SetManager body, SetManager runAfter, char(10) → decodeUriComponent('%0A'), and granting Graph Application permissions. User created, manager wired, license assigned. |
+| 1b | New hire, partial (Jenner) | 2026-05-20 | Failed (license unassigned) | Pre-fix run. User created in Entra but SetManager success-path action was wired to Failed runAfter, so HTTP_GetSkus and downstream license-assign were skipped. Fixed in subsequent build. |
+| 1c | New hire, partial (Naomi Tucker, James Bond, Jennifer Aniston) | 2026-05-20 | Mixed | Various intermediate runs while iterating on Set_varAuditRowID and Graph permissions. |
+| 2 | New hire, misspelled group name | — | Not run | Pending §6.6 |
+| 3 | New hire, manager UPN does not exist | — | Not run | Pending §6.6 |
+| 4 | Termination, immediate, no conversion | — | Not run | Pending §7.x |
+| 5 | Termination, scheduled, shared mailbox + forwarding | — | Not run | Pending §7.x |
+| 6 | Force 429 with rapid submissions | — | Not run | Pending §6.6 |
+
+## Tooling: edit the flow as JSON, not in the designer
+
+Mid-build I pivoted from clicking through the Power Automate v3 designer to editing the flow's JSON definition directly via the Power Automate Management REST API. The v3 designer's Code view paste reverted silently, the action picker stuck after a delete, and several saves quietly dropped changes. The REST API gives a clean round-trip.
+
+Scripts in the repo root:
+
+| Script | Purpose |
+|---|---|
+| `Get-FlowDefinition.ps1` | GET the flow JSON to a local file. Resolves display name → GUID via list call. |
+| `Set-FlowDefinition.ps1` | PATCH only `properties.definition` (and `connectionReferences`) back to the env. Preserves runtime state and connections. |
+| `Grant-AppGraphPermissions.ps1` | Add Microsoft Graph Application permissions to an Entra app reg and grant admin consent in one shot. |
+| `scripts/Setup-SharePointList.ps1` | One-shot PnP provisioning of the audit list per `docs/01-sharepoint-schema.md`. |
+| `scripts/New-TestUsers.ps1` | Seeds the dev tenant with five throwaway test users. |
+
+Typical edit cycle:
+
+```powershell
+# 1. Pull
+.\Get-FlowDefinition.ps1 -EnvironmentId <env> -FlowName "Flow-M365-Lifecycle-Main"
+
+# 2. Edit flow-Flow-M365-Lifecycle-Main.json in VS Code
+
+# 3. Push
+.\Set-FlowDefinition.ps1 -EnvironmentId <env> -FlowName <flow-guid> -DefinitionPath .\flow-Flow-M365-Lifecycle-Main.json -Force
+```
+
+The local JSON contains the flow's embedded Graph client secret. The pattern `flow-*.json` is gitignored — never commit it.
+
+## Lessons learned
+
+- **Power Automate v3 designer is too fragile for non-trivial edits.** Pasting JSON into Code view often reverts silently. The fix was to drive the flow's REST API directly via PowerShell. That makes edits source-controllable and reproducible.
+- **`char(10)` is an Excel function, not a Power Automate Workflow Definition Language function.** Use `decodeUriComponent('%0A')` for newline. Every Append-to-string action also requires the `@` prefix on the expression — without it the literal text `concat(...)` gets appended instead of evaluating.
+- **App registrations created with only Delegated Graph permissions cannot do client-credentials auth.** Flow HTTP actions run as the app itself with no user context. The app needs **Application** type permissions (`User.ReadWrite.All`, `Organization.Read.All`, `Group.ReadWrite.All`) granted with admin consent. Six pre-existing Delegated permissions on the same app reg are unused.
+- **M365 Developer Program tenants don't pre-provision Dataverse**, so `pac` CLI / solution-based workflows don't work out of the box. Bootstrapping a tenant Global Admin into a Dataverse System Administrator role is also blocked by a chicken-and-egg around `prvAssignRole` and a known bug in `pac admin self-elevate` (sends an empty `api-version=` parameter in pac 2.7.4). For this project, none of that matters — the Power Automate REST API path doesn't need Dataverse at all.
+- **`Update item` against a SharePoint list needs the row's numeric ID, not a string.** The audit row's ID has to be captured with `body('Create_AuditRow')?['ID']` into a properly typed Integer variable. Wrapping it in `string()` produces a runtime type-mismatch error.
+- **Production hardening this dev-tenant build deliberately skips:** the flow's HTTP actions embed the client secret instead of using a connection reference; there's no managed identity for the flow itself; no PIM gating on the app reg's role grants; no Sentinel/KQL alerts on the audit list; no idempotency key on the Form trigger. All called out in [docs/02-power-automate-flows.md §11](docs/02-power-automate-flows.md).
+
+## Out of scope
+
+- HRIS integration. Triggering is manual Form submission only.
+- Cross-tenant scenarios. Single tenant.
+- Production hardening (no managed-identity flow context, no Privileged Identity Management gates, no KQL alerts).
+- Custom connectors. Built-in connectors only.

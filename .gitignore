@@ -1,0 +1,31 @@
+# Credentials and secrets
+test-users.csv
+PowerAutomate-Lifecycle.txt
+config.local.json
+*.secret
+*.pfx
+*.key
+*.env
+*.env.*
+!*.env.example
+
+# Flow definition exports — contain embedded Graph API client secret
+flow-*.json
+
+# Claude Code local state (chat memory, hooks, logs, project-private guidance)
+.claude/
+.remember/
+CLAUDE.md
+
+# PowerShell / IDE noise
+*.pssproj
+*.suo
+.vs/
+.vscode/*
+!.vscode/settings.example.json
+.idea/
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini

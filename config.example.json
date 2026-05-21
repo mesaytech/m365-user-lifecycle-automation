@@ -1,0 +1,45 @@
+{
+  "_comment": "Copy to config.local.json (gitignored) and fill in your tenant's values. None of these are secrets — they are identifiers — but they uniquely fingerprint your tenant, so keep them out of the public repo.",
+
+  "tenant": {
+    "primaryDomain": "<yourtenant>.onmicrosoft.com",
+    "tenantId": "00000000-0000-0000-0000-000000000000"
+  },
+
+  "appRegistrations": {
+    "lifecycleAutomation": {
+      "displayName": "M365-Lifecycle-Automation",
+      "clientId": "00000000-0000-0000-0000-000000000000",
+      "_secret": "stored in Power Automate connection only — never in this file"
+    },
+    "pnpSetup": {
+      "displayName": "PnP-Lifecycle-Setup",
+      "clientId": "00000000-0000-0000-0000-000000000000"
+    }
+  },
+
+  "sharepoint": {
+    "siteUrl": "https://<yourtenant>.sharepoint.com/sites/ITAutomation",
+    "listName": "LifecycleAuditLog",
+    "listGuid": "00000000-0000-0000-0000-000000000000"
+  },
+
+  "form": {
+    "displayName": "M365 User Lifecycle Request",
+    "id": "<form-response-id-from-Power-Automate-trigger-config>"
+  },
+
+  "powerPlatform": {
+    "environmentId": "Default-00000000-0000-0000-0000-000000000000",
+    "environmentUrl": "https://org00000000.crm.dynamics.com",
+    "flowGuid": "00000000-0000-0000-0000-000000000000",
+    "flowDisplayName": "Flow-M365-Lifecycle-Main"
+  },
+
+  "azureAutomation": {
+    "subscriptionId": "00000000-0000-0000-0000-000000000000",
+    "resourceGroup": "rg-m365-automation",
+    "accountName": "aa-m365-lifecycle",
+    "runbookName": "Convert-MailboxToShared"
+  }
+}
