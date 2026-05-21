@@ -30,7 +30,7 @@ First built and validated in a Microsoft 365 Developer Program tenant (E5, 25 li
 | 4 | Termination scope §7.6 (remove all licenses) | Done — verified license count went 1→0 |
 | 4 | Termination scope §7.7+§7.8 (mailbox action dispatch — Forward then delete / Delete immediately / Convert to Shared) | Done — all 3 paths verified |
 | 4 | Termination scope §7.9 (finalize audit row) | Done — Status branching works for Succeeded/Partial |
-| 4 | Azure Automation runbook integration for Convert to Shared | Done — runbook invoked via `shared_azureautomation` connector. MI auth + EXO module + Set-Mailbox -Type Shared all working. Two known caveats below. |
+| 4 | Azure Automation runbook integration for Convert to Shared | Done — runbook invoked via `shared_azureautomation` connector. Both initial design caveats (license-ordering, runbook-failure-surfacing) fixed and verified. |
 | 5 | "How it works" walkthrough written | In progress |
 
 ## Documents
@@ -230,7 +230,8 @@ The flow's six test scenarios are defined in [02-power-automate-flows.md section
 | 4f | Termination §7.6+§7.8 Convert to Shared (Nyla Brown, resubmit) | 2026-05-21 | Status=Partial | Full §7.1-§7.9 chain. License removed (SPB), groups removed, Switch routed to Convert to Shared placeholder which logs "manual completion required". User account preserved. |
 | 4g | Termination §7.8 Delete immediately (James Bond) | 2026-05-21 | Succeeded | Full chain through DELETE /users/{id}. James Bond removed from Entra (verified 404). |
 | 4h | Termination §7.8 Forward then delete (Jennifer Aniston) | 2026-05-21 | Partial | SetAutoReply + CreateForwardRule both got 404 (mailbox not provisioned for this test user in dev tenant — design correctly marks these R=non-blocking). DeleteUser succeeded, Jennifer removed from Entra. |
-| 4i | Termination §7.8 Convert to Shared via Azure Automation runbook (Nyla Brown resubmit) | 2026-05-21 | Succeeded (PA) / Failed (runbook internally) | Runbook invocation verified end-to-end: MI auth, ExchangeOnlineManagement v3.4.0 module, Connect-ExchangeOnline, Set-Mailbox all working. Runbook itself failed because Nyla's mailbox was already gone (her license was removed in run 4f, deleting the mailbox). PA reported Succeeded because the connector signals on job *creation*, not job *outcome*. Two design caveats noted in "Known limitations" section. |
+| 4i | Termination §7.8 Convert to Shared via Azure Automation runbook (Nyla Brown resubmit) | 2026-05-21 | Succeeded (PA) / Failed (runbook internally) | Runbook invocation verified end-to-end: MI auth, ExchangeOnlineManagement v3.4.0 module, Connect-ExchangeOnline, Set-Mailbox all working. Runbook itself failed because Nyla's mailbox was already gone (her license was removed in run 4f, deleting the mailbox). PA initially reported Succeeded because the connector signals on job *creation*, not job *outcome*. Two design caveats then identified — both resolved in 4j below. |
+| 4j | Convert to Shared caveat fixes verified (Nyla Brown resubmit) | 2026-05-21 | Succeeded (run) / Status=Partial (audit) | Both caveats from 4i now fixed in the flow. License removal correctly skipped for Convert-to-Shared (Condition_HasLicenses requires Q18 != 'Convert to Shared'). Runbook failure correctly surfaced via Condition_RunbookCompleted gate — Append_StepsCompleted_ConvertToShared was Skipped, Append_StepsFailed_RunbookExecution + Append_ErrorDetails_RunbookExecution fired with full job exception text. Audit row final Status=Partial reflects the real runbook failure instead of a misleading Succeeded. |
 | 5 | Force 429 with rapid submissions | — | Not run | Worth running once. Validates retryPolicy on HTTP actions. |
 
 ## Tooling: edit the flow as JSON, not in the designer
@@ -270,13 +271,13 @@ The local JSON contains the flow's embedded Graph client secret. The pattern `fl
 - **`Update item` against a SharePoint list needs the row's numeric ID, not a string.** The audit row's ID has to be captured with `body('Create_AuditRow')?['ID']` into a properly typed Integer variable. Wrapping it in `string()` produces a runtime type-mismatch error.
 - **Production hardening this dev-tenant build deliberately skips:** the flow's HTTP actions embed the client secret instead of using a connection reference; there's no managed identity for the flow itself; no PIM gating on the app reg's role grants; no Sentinel/KQL alerts on the audit list; no idempotency key on the Form trigger. All called out in [docs/02-power-automate-flows.md §11](docs/02-power-automate-flows.md).
 
-## Known limitations (would fix for production)
+## Known limitations (resolved)
 
-Two design issues uncovered while wiring §7.8 Convert to Shared via Azure Automation. Both accepted as deferred work for this dev-tenant portfolio.
+Two design issues were uncovered while wiring §7.8 Convert to Shared via Azure Automation, and both have been fixed:
 
-**A. License removal happens BEFORE mailbox conversion.** §7.6 RemoveLicenses runs before §7.8 mailbox action. Removing an M365 license soft-deletes the mailbox (30-day retention), and `Set-Mailbox -Type Shared` against a soft-deleted mailbox fails with "object couldn't be found". Production fix: either reorder §7.6 to run *after* §7.8, OR skip §7.6 entirely for the Convert-to-Shared case (a shared mailbox ≤50GB doesn't require any license), OR add `-SoftDeletedMailbox` to the runbook's Set-Mailbox call.
+**A. License removal vs mailbox conversion ordering — RESOLVED.** §7.6 `Condition_HasLicenses` now skips the license-removal block when Q18 = `Convert to Shared`. The mailbox stays intact for the runbook. For the other mailbox actions (Forward then delete, Delete immediately), license removal still runs before user deletion as before.
 
-**B. Runbook failures aren't surfaced to the flow.** The Power Automate Azure Automation connector reports `CreateJob` HTTP 200 when the *job is created*, not when the *runbook completes successfully*. A runbook that throws inside Exchange Online still shows up as Succeeded in the flow run. Production fix: add a `Get_Job` action after `Create_Job_ConvertToShared` to poll the job's actual Status, then route on `equals(Status, 'Completed')` to the success or critical-error path.
+**B. Runbook failures not surfaced — RESOLVED.** Added `Condition_RunbookCompleted` inside `Case_ConvertToShared` that gates the success-append on `body('Create_Job_ConvertToShared')?['properties']?['status'] == 'Completed'`. The else branch writes a CRITICAL marker to varStepsFailed and captures the full job exception in varErrorDetails. §7.9 Finalize then correctly lands Status=Partial (or Failed) when the runbook didn't complete cleanly. Previously misleading "Succeeded" outcomes on runbook failures are gone — verified 2026-05-21 with a re-run that correctly reported Status=Partial and the full Exchange Online error.
 
 ## Out of scope
 
