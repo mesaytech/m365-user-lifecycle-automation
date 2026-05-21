@@ -31,6 +31,7 @@ First built and validated in a Microsoft 365 Developer Program tenant (E5, 25 li
 | 4 | Termination scope §7.7+§7.8 (mailbox action dispatch — Forward then delete / Delete immediately / Convert to Shared) | Done — all 3 paths verified |
 | 4 | Termination scope §7.9 (finalize audit row) | Done — Status branching works for Succeeded/Partial |
 | 4 | Azure Automation runbook integration for Convert to Shared | Done — runbook invoked via `shared_azureautomation` connector. Both initial design caveats (license-ordering, runbook-failure-surfacing) fixed and verified. |
+| 4 | Critical-error chain consistency for §6.3 GetManager, §6.3 SetManager, §6.4 GetSkus | Done — added Update_AuditRow + Terminate chains so any of these failing properly finalizes the audit row (Status=Failed, EndTimestamp, full StepsFailed/ErrorDetails) instead of cascading to Skipped with no finalization. Also fixed Append_ErrorDetails_GetManager from SetVariable to AppendToStringVariable. |
 | 5 | "How it works" walkthrough written | In progress |
 
 ## Documents
