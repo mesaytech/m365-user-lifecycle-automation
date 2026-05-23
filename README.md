@@ -4,7 +4,9 @@ Reference implementation of an end-to-end Power Automate flow that handles new-h
 
 Intended as a deployable reference for other tenants. All tenant-specific identifiers are externalized to `config.local.json` (gitignored). See **Prerequisites** and **Tenant-specific values to capture** sections below.
 
-First built and validated in a Microsoft 365 Developer Program tenant (E5, 25 licenses).
+First built and validated in a Microsoft 365 Developer Program tenant (Business Premium, 25 licenses).
+
+**Author:** Mesay Bezuneh
 
 ## Status
 
@@ -286,3 +288,19 @@ Two design issues were uncovered while wiring §7.8 Convert to Shared via Azure 
 - Cross-tenant scenarios. Single tenant.
 - Production hardening (no managed-identity flow context, no Privileged Identity Management gates, no KQL alerts).
 - Custom connectors. Built-in connectors only.
+
+## Disclaimer
+
+This project is a proof-of-concept built in a Microsoft 365 Developer Program tenant and is provided as-is, without warranty, for educational and reference purposes only. It is not production-hardened. Specifically:
+
+- The Microsoft Graph client secret is embedded inline in the Power Automate flow JSON. The flow JSON is gitignored locally and never committed, but the production-correct pattern is to externalize secrets to Azure Key Vault and reference them via a managed identity.
+- No automated secret-rotation is wired up. The 6-month expiry is tracked manually.
+- The SharePoint, Office 365 Outlook, Microsoft Forms, and Azure Automation connections authenticate as a user identity. If that user leaves the tenant, the flow breaks.
+- All tenant identifiers (site URLs, list GUIDs, Form question IDs, app object IDs, license SKU IDs, automation account names) are tenant-specific. They will not work in another tenant without re-provisioning every artifact and updating the references in the flow JSON.
+- The Azure Automation runbook used for Convert-to-Shared assumes Exchange Online PowerShell module 3.x and managed-identity-on-the-automation-account auth; both must be verified in any new tenant.
+
+Before adapting any pattern from this repo for a production tenant, perform a security review and replace each of the above with the production-correct alternative.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
